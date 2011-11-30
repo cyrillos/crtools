@@ -249,7 +249,7 @@ static int collect_pipe(int pid, struct pipe_entry *e, int p_fd)
 		if (pipes[i].pid > pid && !pipe_is_rw(&pipes[i])) {
 			pipes[i].pid = pid;
 		} else if (pipes[i].pid == pid) {
-			switch (e->flags) {
+			switch (e->flags & O_ACCMODE) {
 			case O_RDONLY:
 				pipes[i].status |= PIPE_RDONLY;
 				break;
@@ -275,16 +275,12 @@ static int collect_pipe(int pid, struct pipe_entry *e, int p_fd)
 	pipes[nr_pipes].pid	= pid;
 	pipes[nr_pipes].users	= 1;
 
-	switch (e->flags) {
+	switch (e->flags & O_ACCMODE) {
 	case O_RDONLY:
 		pipes[nr_pipes].status = PIPE_RDONLY;
 		break;
 	case O_WRONLY:
 		pipes[nr_pipes].status = PIPE_WRONLY;
-		break;
-	default:
-		pr_err("%d: Unknown pipe status pipeid %d\n",
-		       pid, e->pipeid);
 		break;
 	}
 
@@ -881,6 +877,21 @@ static int prepare_and_sigreturn(int pid)
 	return 0;
 }
 
+#define SETFL_MASK (O_APPEND | O_NONBLOCK | O_NDELAY | O_DIRECT | O_NOATIME)
+
+static int set_fd_flags(int fd, int flags)
+{
+	int old;
+
+	old = fcntl(fd, F_GETFL, 0);
+	if (old < 0)
+		return old;
+
+	flags = (SETFL_MASK & flags) | (old & ~SETFL_MASK);
+
+	return fcntl(fd, F_SETFL, flags);
+}
+
 static int create_pipe(int pid, struct pipe_entry *e, struct pipe_info *pi, int pipes_fd)
 {
 	unsigned long time = 1000;
@@ -949,6 +960,10 @@ static int create_pipe(int pid, struct pipe_entry *e, struct pipe_info *pi, int 
 	if (tmp < 0)
 		return 1;
 
+	tmp = set_fd_flags(e->fd, e->flags);
+	if (tmp < 0)
+		return 1;
+
 	return 0;
 }
 
@@ -991,6 +1006,10 @@ static int attach_pipe(int pid, struct pipe_entry *e, struct pipe_info *pi, int 
 
 	lseek(pipes_fd, e->bytes, SEEK_CUR);
 
+	tmp = set_fd_flags(e->fd, e->flags);
+	if (tmp < 0)
+		return 1;
+
 	return 0;
 
 }
@@ -1029,6 +1048,44 @@ static int open_pipe(int pid, struct pipe_entry *e, int *pipes_fd)
 	else
 		return attach_pipe(pid, e, pi, *pipes_fd);
 }
+
+static int prepare_sigactions(int pid)
+{
+	int fd_sigact, ret;
+	int sig, i;
+	struct sigaction act, oact;
+
+	fd_sigact = open_fmt_ro(FMT_FNAME_SIGACTS, pid);
+	if (fd_sigact < 0) {
+		pr_perror("%d: Can't open sigactions img\n", pid);
+		return 1;
+	}
+
+	for (sig = 1; sig < SIGMAX; sig++) {
+		if (sig == SIGKILL || sig == SIGSTOP)
+			continue;
+
+		ret = read(fd_sigact, &act, sizeof(act));
+		if (ret != sizeof(act)) {
+			pr_err("%d: Bad sigaction entry: %d (%m)\n", pid, ret);
+			ret = -1;
+			goto err;
+		}
+
+		/* A pure syscall is used, because a glibc
+		 * sigaction overwrite se_restorer */
+		ret = sys_sigaction(sig, &act, &oact);
+		if (ret == -1) {
+			pr_err("%d: Can't restore sigaction: %m\n", pid);
+			goto err;
+		}
+	}
+
+err:
+	close(fd_sigact);
+	return ret;
+}
+
 
 static int prepare_pipes(int pid)
 {
@@ -1082,6 +1139,9 @@ static int restore_one_task(int pid)
 		return 1;
 
 	if (prepare_shmem(pid))
+		return 1;
+
+	if (prepare_sigactions(pid))
 		return 1;
 
 	return prepare_and_sigreturn(pid);

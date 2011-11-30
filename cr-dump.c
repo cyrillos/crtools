@@ -20,6 +20,8 @@
 
 #include <sys/sendfile.h>
 
+#include <linux/major.h>
+
 #include "types.h"
 #include "list.h"
 
@@ -219,43 +221,12 @@ err:
 	return ret;
 }
 
-static bool should_ignore_fd(char *pid_fd_dir, int dir, char *fd_name)
-{
-	if (!strcmp(fd_name, "0")) {
-		pr_info("... Skipping stdin ...\n");
-		return true;
-	} else if (!strcmp(fd_name, "1")) {
-		pr_info("... Skipping stdout ...\n");
-		return true;
-	} else if (!strcmp(fd_name, "2")) {
-		pr_info("... Skipping stderr ...\n");
-		return true;
-	} else {
-		char ttybuf[32];
-
-		if (readlinkat(dir, fd_name, ttybuf, sizeof(ttybuf)) > 0) {
-			if (!strncmp(ttybuf, "/dev/tty", 8)) {
-				pr_info("... Skipping tty ...\n");
-				return true;
-			}
-		} else {
-			pr_perror("Failed to readlink %s/%d %s\n", pid_fd_dir, dir, fd_name);
-			return false;
-		}
-	}
-
-	return false;
-}
-
 static int dump_one_fd(char *pid_fd_dir, int dir, char *fd_name, unsigned long pos,
 		       unsigned int flags, struct cr_fdset *cr_fdset)
 {
 	struct statfs stfs_buf;
 	struct stat st_buf;
 	int fd;
-
-	if (should_ignore_fd(pid_fd_dir, dir, fd_name))
-		return 0;
 
 	fd = openat(dir, fd_name, O_RDONLY);
 	if (fd < 0) {
@@ -268,7 +239,20 @@ static int dump_one_fd(char *pid_fd_dir, int dir, char *fd_name, unsigned long p
 		return -1;
 	}
 
-	if (S_ISREG(st_buf.st_mode))
+	if (S_ISCHR(st_buf.st_mode) &&
+		( major(st_buf.st_rdev) == TTY_MAJOR ||
+		  major(st_buf.st_rdev) == UNIX98_PTY_SLAVE_MAJOR)) {
+		/* skip only standard destriptors */
+		if (atoi(fd_name) < 3) {
+			pr_info("... Skipping tty ... %s/%s\n", pid_fd_dir, fd_name);
+			return 0;
+		}
+		goto err;
+	}
+
+	if (S_ISREG(st_buf.st_mode) ||
+	    S_ISDIR(st_buf.st_mode) ||
+	    (S_ISCHR(st_buf.st_mode) && major(st_buf.st_rdev) == MEM_MAJOR))
 		return dump_one_reg_file(FDINFO_FD, atol(fd_name),
 					 fd, 1, pos, flags, cr_fdset);
 
@@ -283,6 +267,7 @@ static int dump_one_fd(char *pid_fd_dir, int dir, char *fd_name, unsigned long p
 					     st_buf.st_ino, flags, cr_fdset);
 	}
 
+err:
 	pr_err("Can't dump file %s of that type [%x]\n", fd_name, st_buf.st_mode);
 	return 1;
 }
@@ -515,7 +500,7 @@ static int get_task_stat(pid_t pid, u8 *comm, u32 *flags,
 	}
 
 	while (fgets(loc_buf, sizeof(loc_buf), file)) {
-		if (!strncmp(loc_buf, "SigCgt:", 7)) {
+		if (!strncmp(loc_buf, "SigBlk:", 7)) {
 			char *end;
 			*task_sigset = strtol(&loc_buf[8], &end, 16);
 			break;
@@ -1122,6 +1107,12 @@ static int dump_one_task(pid_t pid, struct cr_fdset *cr_fdset)
 					 cr_fdset, CR_FD_PAGES);
 	if (ret) {
 		pr_err("Can't dump pages (pid: %d) with parasite\n", pid);
+		goto err;
+	}
+
+	ret = parasite_dump_sigacts_seized(parasite_ctl, cr_fdset);
+	if (ret) {
+		pr_err("Can't dump sigactions (pid: %d) with parasite\n", pid);
 		goto err;
 	}
 

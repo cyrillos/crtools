@@ -22,12 +22,14 @@
 #define PARASITE_ERR_CLOSE	-1029
 #define PARASITE_ERR_WRITE	-1030
 #define PARASITE_ERR_MPROTECT	-1031
+#define PARASITE_ERR_SIGACTION  -1032
 
 enum {
 	PARASITE_CMD_NONE,
 	PARASITE_CMD_KILLME,
 	PARASITE_CMD_PINGME,
 	PARASITE_CMD_DUMPPAGES,
+	PARASITE_CMD_DUMP_SIGACTS,
 
 	PARASITE_CMD_MAX,
 };
@@ -38,17 +40,28 @@ typedef struct {
 	void			*args;
 } parasite_args_t;
 
-typedef struct {
-	struct vma_entry	vma_entry;
-	unsigned long		nrpages_dumped;	/* how many pages are dumped */
-	unsigned long		fd;
+typedef struct  {
 	long			ret;
 	long			sys_ret;
 	long			line;
+} parasite_status_t;
+
+typedef struct {
+	parasite_status_t	status;
+	struct vma_entry	vma_entry;
+	unsigned long		nrpages_dumped;	/* how many pages are dumped */
+	unsigned long		fd;
 	unsigned long		open_mode;
 	unsigned long		open_flags;
 	char			open_path[256];
 } parasite_args_cmd_dumppages_t;
+
+typedef struct {
+	parasite_status_t	status;
+	unsigned long		open_mode;
+	unsigned long		open_flags;
+	char			open_path[256];
+} parasite_args_cmd_dumpsigacts_t;
 
 /*
  * Some useful offsets
