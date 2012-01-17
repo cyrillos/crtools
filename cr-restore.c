@@ -34,6 +34,7 @@
 #include "lock.h"
 #include "files.h"
 #include "proc_parse.h"
+#include "restorer-blob.h"
 #include "crtools.h"
 
 /*
@@ -74,6 +75,22 @@ struct pipe_list_entry {
 	struct pipe_entry	e;
 	off_t			offset;
 };
+
+static struct task_entries *task_entries;
+
+static void task_add_entry(int pid)
+{
+	int *nr = &task_entries->nr;
+	struct task_entry *e = &task_entries->entries[*nr];
+
+	(*nr)++;
+
+	BUG_ON((*nr) * sizeof(struct task_entry) +
+		sizeof(struct task_entries) > TASK_ENTRIES_SIZE);
+
+	e->pid = pid;
+	e->done = 0;
+}
 
 static struct shmem_id *shmem_ids;
 
@@ -334,14 +351,14 @@ static int prepare_pipes_pid(int pid)
 	return 0;
 }
 
-static int shmem_remap(struct shmems *old_addr, struct shmems *new_addr)
+static int shmem_remap(void *old_addr, void *new_addr, unsigned long size)
 {
 	char path[PATH_MAX];
 	int fd;
 	void *ret;
 
 	sprintf(path, "/proc/self/map_files/%p-%p",
-		old_addr, (void *)old_addr + SHMEMS_SIZE);
+		old_addr, (void *)old_addr + size);
 
 	fd = open(path, O_RDWR);
 	if (fd < 0) {
@@ -349,15 +366,10 @@ static int shmem_remap(struct shmems *old_addr, struct shmems *new_addr)
 		return -1;
 	}
 
-	ret = mmap(new_addr, SHMEMS_SIZE, PROT_READ | PROT_WRITE,
+	ret = mmap(new_addr, size, PROT_READ | PROT_WRITE,
 		   MAP_SHARED | MAP_FIXED, fd, 0);
 	if (ret != new_addr) {
 		pr_perror("mmap failed\n");
-		return -1;
-	}
-
-	if (new_addr->nr_shmems != old_addr->nr_shmems) {
-		pr_err("shmem_remap failed\n");
 		return -1;
 	}
 
@@ -376,6 +388,14 @@ static int prepare_shared(int ps_fd)
 	}
 
 	shmems->nr_shmems = 0;
+
+	task_entries = mmap(NULL, TASK_ENTRIES_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, 0, 0);
+	if (task_entries == MAP_FAILED) {
+		pr_perror("Can't map shmem\n");
+		return -1;
+	}
+	task_entries->nr = 0;
+	task_entries->start  = 0;
 
 	pipes = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANON, 0, 0);
 	if (pipes == MAP_FAILED) {
@@ -407,6 +427,8 @@ static int prepare_shared(int ps_fd)
 
 		if (prepare_fd_pid(e.pid))
 			return -1;
+
+		task_add_entry(e.pid);
 
 		lseek(ps_fd, e.nr_children * sizeof(u32) + e.nr_threads * sizeof(u32), SEEK_CUR);
 	}
@@ -1194,7 +1216,7 @@ static int restore_task_with_children(int my_pid)
 static int restore_root_task(int fd)
 {
 	struct pstree_entry e;
-	int ret;
+	int ret, i;
 
 	ret = read(fd, &e, sizeof(e));
 	if (ret != sizeof(e)) {
@@ -1208,6 +1230,15 @@ static int restore_root_task(int fd)
 	ret = fork_with_pid(e.pid);
 	if (ret < 0)
 		return -1;
+
+	for (i = 0; i < task_entries->nr; i++) {
+		pr_info("Wait while the task %d restored\n",
+				task_entries->entries[i].pid);
+		cr_wait_while(&task_entries->entries[i].done, 0);
+	}
+
+	pr_info("Go on!!!\n");
+	cr_wait_set(&task_entries->start, 1);
 
 	wait(NULL);
 	return 0;
@@ -1287,13 +1318,13 @@ err_or_found:
 
 static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 {
-	long restore_task_code_len, restore_task_vma_len;
-	long restore_thread_code_len, restore_thread_vma_len;
-	long restore_shmem_vma_len;
+	long restore_code_len, restore_task_vma_len;
+	long restore_thread_vma_len;
 
 	void *exec_mem = MAP_FAILED;
 	void *restore_thread_exec_start;
 	void *restore_task_exec_start;
+	void *restore_code_start;
 	void *shmems_ref;
 
 	long new_sp, exec_mem_hint;
@@ -1317,11 +1348,9 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 
 	pr_info("%d: Restore via sigreturn\n", pid);
 
-	restore_task_code_len	= 0;
+	restore_code_len	= 0;
 	restore_task_vma_len	= 0;
-	restore_thread_code_len	= 0;
 	restore_thread_vma_len	= 0;
-	restore_shmem_vma_len	= SHMEMS_SIZE;
 
 	pid_dir = open_pid_proc(pid);
 	if (pid_dir < 0)
@@ -1336,6 +1365,8 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 
 	BUILD_BUG_ON(sizeof(struct task_restore_core_args) & 1);
 	BUILD_BUG_ON(sizeof(struct thread_restore_args) & 1);
+	BUILD_BUG_ON(SHMEMS_SIZE % PAGE_SIZE);
+	BUILD_BUG_ON(TASK_ENTRIES_SIZE % PAGE_SIZE);
 
 	fd_pstree = open_image_ro_nocheck(FMT_FNAME_PSTREE, pstree_pid);
 	if (fd_pstree < 0)
@@ -1374,10 +1405,10 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 
 	free_mappings(&self_vma_list);
 
-	restore_task_code_len	= restore_task(RESTORE_CMD__GET_SELF_LEN, NULL) - (long)restore_task;
-	restore_task_code_len	= round_up(restore_task_code_len, 16);
+	restore_code_len	= sizeof(restorer_blob);
+	restore_code_len	= round_up(restore_code_len, 16);
 
-	restore_task_vma_len	= round_up(restore_task_code_len + sizeof(*task_args), PAGE_SIZE);
+	restore_task_vma_len	= round_up(restore_code_len + sizeof(*task_args), PAGE_SIZE);
 
 	/*
 	 * Thread statistics
@@ -1408,13 +1439,8 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 		 * per thread.
 		 */
 
-		restore_thread_code_len = restore_thread(RESTORE_CMD__GET_SELF_LEN, NULL) - (long)restore_thread;
-		restore_thread_code_len	= round_up(restore_thread_code_len, 16);
-
 		restore_thread_vma_len = sizeof(*thread_args) * pstree_entry.nr_threads;
 		restore_thread_vma_len = round_up(restore_thread_vma_len, 16);
-
-		restore_thread_vma_len+= restore_thread_code_len;
 
 		pr_info("%d: %d threads require %dK of memory\n",
 			pid, pstree_entry.nr_threads,
@@ -1427,7 +1453,7 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 	exec_mem_hint = restorer_get_vma_hint(pid, &self_vma_list,
 					      restore_task_vma_len +
 					      restore_thread_vma_len +
-					      restore_shmem_vma_len);
+					      SHMEMS_SIZE + TASK_ENTRIES_SIZE);
 	if (exec_mem_hint == -1) {
 		pr_err("No suitable area for task_restore bootstrap (%dK)\n",
 		       restore_task_vma_len + restore_thread_vma_len);
@@ -1452,10 +1478,11 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 	 * Prepare a memory map for restorer. Note a thread space
 	 * might be completely unused so it's here just for convenience.
 	 */
-	restore_task_exec_start		= exec_mem;
-	restore_thread_exec_start	= restore_task_exec_start + restore_task_vma_len;
-	task_args			= restore_task_exec_start + restore_task_code_len;
-	thread_args			= restore_thread_exec_start + restore_thread_code_len;
+	restore_code_start		= exec_mem;
+	restore_thread_exec_start	= restore_code_start + restorer_blob_offset__restore_thread;
+	restore_task_exec_start		= restore_code_start + restorer_blob_offset__restore_task;
+	task_args			= restore_code_start + restore_code_len;
+	thread_args			= restore_thread_exec_start;
 
 	memzero_p(task_args);
 	memzero_p(thread_args);
@@ -1463,8 +1490,7 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 	/*
 	 * Code at a new place.
 	 */
-	memcpy(restore_task_exec_start, &restore_task, restore_task_code_len);
-	memcpy(restore_thread_exec_start, &restore_thread, restore_thread_code_len);
+	memcpy(restore_code_start, &restorer_blob, sizeof(restorer_blob));
 
 	/*
 	 * Adjust stack.
@@ -1484,9 +1510,18 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 	shmems_ref = (struct shmems *)(exec_mem_hint +
 				       restore_task_vma_len +
 				       restore_thread_vma_len);
-	ret = shmem_remap(shmems, shmems_ref);
+	ret = shmem_remap(shmems, shmems_ref, SHMEMS_SIZE);
 	if (ret < 0)
 		goto err;
+
+	shmems_ref = (struct shmems *)(exec_mem_hint +
+				       restore_task_vma_len +
+				       restore_thread_vma_len +
+				       SHMEMS_SIZE);
+	ret = shmem_remap(task_entries, shmems_ref, TASK_ENTRIES_SIZE);
+	if (ret < 0)
+		goto err;
+	task_args->task_entries = shmems_ref;
 
 	/*
 	 * Arguments for task restoration.
@@ -1495,6 +1530,7 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 	task_args->shmems	= shmems_ref;
 	task_args->fd_core	= fd_core;
 	task_args->fd_self_vmas	= fd_self_vmas;
+	task_args->logfd	= get_logfd();
 
 	cr_mutex_init(&task_args->rst_lock);
 
@@ -1551,7 +1587,6 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 		task_args->thread_args);
 
 	close_safe(&fd_pstree);
-	fini_log();
 
 	/*
 	 * An indirect call to task_restore, note it never resturns
@@ -1560,8 +1595,7 @@ static void sigreturn_restore(pid_t pstree_pid, pid_t pid)
 	asm volatile(
 		"movq %0, %%rbx						\n"
 		"movq %1, %%rax						\n"
-		"movq %2, %%rsi						\n"
-		"movl $"__stringify(RESTORE_CMD__RESTORE_CORE)", %%edi	\n"
+		"movq %2, %%rdi						\n"
 		"movq %%rbx, %%rsp					\n"
 		"callq *%%rax						\n"
 		:
