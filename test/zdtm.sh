@@ -42,6 +42,7 @@ static/shm
 "
 
 CRTOOLS=`pwd`/`dirname $0`/../crtools
+test -x $CRTOOLS || exit 1
 
 run_test()
 {
@@ -50,22 +51,26 @@ run_test()
 	local args=$*
 	local tname=`basename $test`
 	local tdir=`dirname $test`
+	local ret
 
 	killall -9 $tname
 	make -C $tdir cleanout $tname.pid
 
-	local pid=`cat $test.pid` || return 1
-	local ddump=dump/$tname/$pid
+	local pid ddump
+	pid=`cat $test.pid` || return 1
+	ddump=dump/$tname/$pid
 	DUMP_PATH=`pwd`/$ddump
 
 	echo Dump $pid
 	mkdir -p $ddump
-	setsid $CRTOOLS dump -D $ddump -o dump.log -t $pid $args || return 1
+	setsid $CRTOOLS dump -D $ddump -o dump.log -t $pid $args
+	ret=$?
 	while :; do
 		killall -9 $tname &> /dev/null || break
 		echo Waiting...
 		sleep 1
 	done
+	[ "$ret" -eq 0 ] || return 1
 
 	echo Restore $pid
 	setsid $CRTOOLS restore -D $ddump -o restore.log -d -t $pid $args || return 2
