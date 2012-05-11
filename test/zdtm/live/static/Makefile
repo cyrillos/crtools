@@ -39,6 +39,7 @@ TST_NOFILE	=				\
 		sockets_dgram			\
 		socket_queues			\
 		ipc_namespace			\
+		pid_namespace			\
 		selfexe00			\
 		sem				\
 		maps01				\

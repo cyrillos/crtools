@@ -58,6 +58,8 @@ static int child(key_t key)
 	if (mem == (uint8_t *)-1)
 		return -3;
 
+	test_ns_daemon();
+
 	while (test_go()) {
 		ret = semop(sem, &lock, 1);
 		if (ret) {
@@ -138,7 +140,7 @@ static int test_fn(int argc, char **argv)
 	} else if (pid2 == 0)
 		exit(child(key));
 
-	test_daemon();
+	test_ns_daemon();
 	while (test_go()) {
 		ret = semop(sem, &lock, 1);
 		if (ret) {

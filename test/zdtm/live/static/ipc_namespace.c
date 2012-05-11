@@ -343,7 +343,7 @@ static int test_fn(int argc, char **argv)
 		return ret;
 	}
 
-	test_daemon();
+	test_ns_daemon();
 	test_waitsig();
 
 	ret = fill_ipc_ns(&ipc_after);

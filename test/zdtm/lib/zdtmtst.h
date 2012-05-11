@@ -7,6 +7,10 @@
 extern void test_init(int argc, char **argv);
 extern void test_init_ns(int argc, char **argv, unsigned long clone_flags, int (*fn)(int , char **));
 
+/* This function should be called for each child,
+ * if it isn't called befor test_fork */
+extern void test_ns_daemon(void);
+
 #ifndef CLONE_NEWUTS
 #define CLONE_NEWUTS 0x04000000
 #endif

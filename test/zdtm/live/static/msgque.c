@@ -57,6 +57,7 @@ static int test_fn(int argc, char **argv)
 	}
 
 	if (pid == 0) {
+		test_ns_daemon();
 		test_waitsig();
 
 		if (msgrcv(msg, &msgbuf, sizeof(TEST_STRING), MSG_TYPE, IPC_NOWAIT) == -1) {
@@ -93,7 +94,7 @@ static int test_fn(int argc, char **argv)
 			return -errno;
 		};
 
-		test_daemon();
+		test_ns_daemon();
 		test_waitsig();
 
 		kill(pid, SIGTERM);
