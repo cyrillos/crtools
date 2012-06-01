@@ -176,15 +176,15 @@ struct rst_info {
 	struct list_head	eventpoll;
 };
 
-struct pid
-{
-	u32 real_pid;
+struct pid {
 	u32 pid;
+	u32 real_pid;
 };
 
 struct pstree_item {
 	struct list_head	list;
-	struct pid		pid;		/* leader pid */
+	u32 pid;
+	u32 real_pid;
 	struct pstree_item	*parent;
 	struct list_head	children;	/* array of children */
 	pid_t			pgid;

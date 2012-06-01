@@ -100,7 +100,7 @@ static int prepare_pstree(void)
 		if (pi == NULL)
 			break;
 
-		pi->pid.pid = e.pid;
+		pi->pid = e.pid;
 		pi->pgid = e.pgid;
 		pi->sid = e.sid;
 
@@ -116,18 +116,18 @@ static int prepare_pstree(void)
 			 * and sit among the last item's ancestors.
 			 */
 			while (parent) {
-				if (parent->pid.pid == e.ppid)
+				if (parent->pid == e.ppid)
 					break;
 				parent = parent->parent;
 			}
 
 			if (parent == NULL)
 				for_each_pstree_item(parent)
-					if (parent->pid.pid == e.ppid)
+					if (parent->pid == e.ppid)
 						break;
 
 			if (parent == NULL) {
-				pr_err("Can't find a parent for %d", pi->pid.pid);
+				pr_err("Can't find a parent for %d", pi->pid);
 				xfree(pi);
 				break;
 			}
@@ -201,11 +201,11 @@ static int prepare_shared(void)
 		return -1;
 
 	for_each_pstree_item(pi) {
-		ret = prepare_shmem_pid(pi->pid.pid);
+		ret = prepare_shmem_pid(pi->pid);
 		if (ret < 0)
 			break;
 
-		ret = prepare_fd_pid(pi->pid.pid, pi->rst);
+		ret = prepare_fd_pid(pi->pid, pi->rst);
 		if (ret < 0)
 			break;
 	}
@@ -497,7 +497,7 @@ static inline int fork_with_pid(struct pstree_item *item, unsigned long ns_clone
 	char buf[32];
 	struct cr_clone_arg ca;
 	void *stack;
-	pid_t pid = item->pid.pid;
+	pid_t pid = item->pid;
 
 	pr_info("Forking task with %d pid (flags 0x%lx)\n", pid, ns_clone_flags);
 
@@ -581,8 +581,8 @@ static void restore_sid(void)
 	 * we can call setpgid() on custom values.
 	 */
 
-	pr_info("Restoring %d to %d sid\n", me->pid.pid, me->sid);
-	if (me->pid.pid == me->sid) {
+	pr_info("Restoring %d to %d sid\n", me->pid, me->sid);
+	if (me->pid == me->sid) {
 		sid = setsid();
 		if (sid != me->sid) {
 			pr_perror("Can't restore sid (%d)", sid);
@@ -602,7 +602,7 @@ static void restore_pgid(void)
 {
 	pid_t pgid;
 
-	pr_info("Restoring %d to %d pgid\n", me->pid.pid, me->pgid);
+	pr_info("Restoring %d to %d pgid\n", me->pid, me->pgid);
 
 	pgid = getpgrp();
 	if (me->pgid == pgid)
@@ -610,7 +610,7 @@ static void restore_pgid(void)
 
 	pr_info("\twill call setpgid, mine pgid is %d\n", pgid);
 	if (setpgid(0, me->pgid) != 0) {
-		pr_perror("Can't restore pgid (%d/%d->%d)", me->pid.pid, pgid, me->pgid);
+		pr_perror("Can't restore pgid (%d/%d->%d)", me->pid, pgid, me->pgid);
 		xid_fail();
 	}
 }
@@ -630,8 +630,8 @@ static int restore_task_with_children(void *_arg)
 	me = ca->item;
 
 	pid = getpid();
-	if (me->pid.pid != pid) {
-		pr_err("Pid %d do not match expected %d\n", pid, me->pid.pid);
+	if (me->pid != pid) {
+		pr_err("Pid %d do not match expected %d\n", pid, me->pid);
 		exit(-1);
 	}
 
@@ -649,7 +649,7 @@ static int restore_task_with_children(void *_arg)
 		exit(1);
 
 	if (ca->clone_flags) {
-		ret = prepare_namespace(me->pid.pid, ca->clone_flags);
+		ret = prepare_namespace(me->pid, ca->clone_flags);
 		if (ret)
 			exit(-1);
 	}
@@ -665,7 +665,7 @@ static int restore_task_with_children(void *_arg)
 	sigdelset(&blockmask, SIGCHLD);
 	ret = sigprocmask(SIG_BLOCK, &blockmask, NULL);
 	if (ret) {
-		pr_perror("%d: Can't block signals", me->pid.pid);
+		pr_perror("%d: Can't block signals", me->pid);
 		exit(1);
 	}
 
@@ -681,7 +681,7 @@ static int restore_task_with_children(void *_arg)
 
 	restore_pgid();
 
-	return restore_one_task(me->pid.pid);
+	return restore_one_task(me->pid);
 }
 
 static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
@@ -710,7 +710,7 @@ static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
 	 * this later.
 	 */
 
-	if (init->pid.pid == 1) {
+	if (init->pid == 1) {
 		sprintf(proc_mountpoint, "/tmp/crtools-proc.XXXXXX");
 		if (mkdtemp(proc_mountpoint) == NULL) {
 			pr_err("mkdtemp failed %m");
@@ -740,7 +740,7 @@ static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
 	ret = (int)futex_get(&task_entries->nr_in_progress);
 
 out:
-	if (init->pid.pid == 1) {
+	if (init->pid == 1) {
 		int err;
 		err = umount(proc_mountpoint);
 		if (err == -1)
@@ -755,7 +755,7 @@ out:
 		pr_err("Someone can't be restored\n");
 
 		for_each_pstree_item(pi)
-			kill(pi->pid.pid, SIGKILL);
+			kill(pi->pid, SIGKILL);
 
 		return 1;
 	}
