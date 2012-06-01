@@ -341,7 +341,27 @@ err:
 
 static int restore_one_alive_task(int pid)
 {
+	struct pstree_item *pi;
 	pr_info("Restoring resources\n");
+
+	list_for_each_entry(pi, &me->children, list) {
+		int status, ret;
+
+		if (pi->state != TASK_HELPER)
+			continue;
+
+		ret = waitpid(pi->pid, &status, 0);
+		if (ret == -1) {
+			pr_err("waitpid(%d) failed\n", pi->pid);
+			return -1;
+		}
+
+		if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+			pr_err("%d exited with non-zero code (%d,%d)", pi->pid,
+				WEXITSTATUS(status), WTERMSIG(status));
+			return -1;
+		}
+	}
 
 	if (prepare_fds(me))
 		return -1;
@@ -403,6 +423,13 @@ static void zombie_prepare_signals(void)
 static inline int sig_fatal(int sig)
 {
 	return (sig > 0) && (sig < SIGMAX) && (SIG_FATAL_MASK & (1 << sig));
+}
+
+static int restore_one_fake(int pid)
+{
+	/* We should wait here, otherwise last_pid will be changed. */
+	futex_wait_while(&task_entries->start, CR_STATE_FORKING);
+	return 0;
 }
 
 static int restore_one_zombie(int pid, int exit_code)
@@ -472,6 +499,9 @@ out:
 static int restore_one_task(int pid)
 {
 	struct task_core_entry tc;
+
+	if (me->state == TASK_HELPER)
+		return restore_one_fake(pid);
 
 	if (check_core_header(pid, &tc))
 		return -1;
@@ -557,6 +587,16 @@ err:
 
 static void sigchld_handler(int signal, siginfo_t *siginfo, void *data)
 {
+	struct pstree_item *pi;
+
+	if (me)
+		list_for_each_entry(pi, &me->children, list) {
+			if (pi->state != TASK_HELPER)
+				continue;
+			if (pi->pid == siginfo->si_pid)
+				return;
+		}
+
 	if (siginfo->si_code & CLD_EXITED)
 		pr_err("%d exited, status=%d\n",
 			siginfo->si_pid, siginfo->si_status);
@@ -704,7 +744,7 @@ static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
 		return -1;
 	}
 
-	act.sa_flags |= SA_NOCLDWAIT | SA_NOCLDSTOP | SA_SIGINFO | SA_RESTART;
+	act.sa_flags |= SA_NOCLDSTOP | SA_SIGINFO | SA_RESTART;
 	act.sa_sigaction = sigchld_handler;
 	ret = sigaction(SIGCHLD, &act, &old_act);
 	if (ret < 0) {
