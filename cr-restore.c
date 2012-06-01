@@ -223,8 +223,26 @@ static int prepare_pstree_ids(void)
 		if (item->state == TASK_HELPER)
 			continue;
 
-		if (item->sid != item->pid)
+		if (item->sid != item->pid) {
+			struct pstree_item *parent;
+
+			if (item->parent->sid == item->sid)
+				continue;
+
+			/* the task could fork a child before and after setsid() */
+			parent = item->parent;
+			while (parent && parent->pid != item->sid) {
+				parent->born_sid = item->sid;
+				pr_info("%d was born with sid %d\n", parent->pid, item->sid);
+				parent = parent->parent;
+			}
+
+			if (parent == NULL) {
+				pr_err("Can't find a session leader for %d\n", item->sid);
+			}
+
 			continue;
+		}
 
 		pr_info("Session leader %d\n", item->sid);
 
@@ -747,6 +765,16 @@ static void restore_pgid(void)
 
 static char proc_mountpoint[PATH_MAX] = "/proc";
 
+static bool restore_before_setsid(struct pstree_item *child)
+{
+	int csid = child->born_sid == -1 ? child->sid : child->born_sid;
+
+	if (child->parent->born_sid == csid)
+		return true;
+
+	return false;
+}
+
 static int restore_task_with_children(void *_arg)
 {
 	struct cr_clone_arg *ca = _arg;
@@ -784,8 +812,6 @@ static int restore_task_with_children(void *_arg)
 			exit(-1);
 	}
 
-	restore_sid();
-
 	/*
 	 * The block mask will be restored in sigresturn.
 	 *
@@ -801,13 +827,31 @@ static int restore_task_with_children(void *_arg)
 
 	pr_info("Restoring children:\n");
 	list_for_each_entry(child, &me->children, list) {
+		if (!restore_before_setsid(child))
+			continue;
+
+		BUG_ON(child->born_sid != -1 && getsid(getpid()) != child->born_sid);
+
 		ret = fork_with_pid(child, 0);
 		if (ret < 0)
 			exit(1);
 	}
 
-	futex_dec_and_wake(&task_entries->nr_in_progress);
-	futex_wait_while(&task_entries->start, CR_STATE_FORKING);
+	restore_sid();
+
+	pr_info("Restoring children:\n");
+	list_for_each_entry(child, &me->children, list) {
+		if (restore_before_setsid(child))
+			continue;
+		ret = fork_with_pid(child, 0);
+		if (ret < 0)
+			exit(1);
+	}
+
+	if (me->state != TASK_HELPER) {
+		futex_dec_and_wake(&task_entries->nr_in_progress);
+		futex_wait_while(&task_entries->start, CR_STATE_FORKING);
+	}
 
 	restore_pgid();
 

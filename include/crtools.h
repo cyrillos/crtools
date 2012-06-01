@@ -184,7 +184,10 @@ struct pid {
 struct pstree_item {
 	struct list_head	list;
 	u32 pid;
-	u32 real_pid;
+	union {
+		u32 real_pid;
+		u32 born_sid;
+	};
 	struct pstree_item	*parent;
 	struct list_head	children;	/* array of children */
 	pid_t			pgid;
