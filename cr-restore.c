@@ -729,8 +729,8 @@ static void restore_sid(void)
 	 * we can call setpgid() on custom values.
 	 */
 
-	pr_info("Restoring %d to %d sid\n", me->pid, me->sid);
 	if (me->pid == me->sid) {
+		pr_info("Restoring %d to %d sid\n", me->pid, me->sid);
 		sid = setsid();
 		if (sid != me->sid) {
 			pr_perror("Can't restore sid (%d)", sid);
