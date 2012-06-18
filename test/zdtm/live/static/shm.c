@@ -119,7 +119,7 @@ static int test_fn(int argc, char **argv)
 		goto out;
 	}
 
-	test_daemon();
+	test_ns_daemon();
 	test_waitsig();
 
 	ret = check_shm_id(shm, shmem_size);

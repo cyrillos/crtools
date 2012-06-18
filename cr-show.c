@@ -446,7 +446,7 @@ static int show_collect_pstree(int fd_pstree, struct list_head *collect)
 					goto out;
 				pr_msg(" %6d", pid);
 				if (item)
-					item->threads[e.nr_threads] = pid;
+					item->threads[e.nr_threads].pid = pid;
 			}
 			pr_msg("\n");
 		}
@@ -668,7 +668,7 @@ static int cr_show_all(struct cr_options *opts)
 
 			for (i = 0; i < item->nr_threads; i++) {
 
-				if (item->threads[i] == item->pid)
+				if (item->threads[i].pid == item->pid)
 					continue;
 
 				fd_th = open_image_ro(CR_FD_CORE, item->threads[i]);
@@ -676,7 +676,7 @@ static int cr_show_all(struct cr_options *opts)
 					goto out;
 
 				pr_msg("\n");
-				pr_msg("Thread: %d\n", item->threads[i]);
+				pr_msg("Thread: %d\n", item->threads[i].pid);
 				pr_msg("----------------------------------------\n");
 
 				show_core(fd_th, opts);

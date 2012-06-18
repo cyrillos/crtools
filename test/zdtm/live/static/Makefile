@@ -39,6 +39,7 @@ TST_NOFILE	=				\
 		sockets_dgram			\
 		socket_queues			\
 		ipc_namespace			\
+		pid_namespace			\
 		selfexe00			\
 		sem				\
 		maps01				\
@@ -46,6 +47,7 @@ TST_NOFILE	=				\
 		file_fown			\
 		eventfs00			\
 		inotify00			\
+		session00			\
 #		jobctl00			\
 
 TST_FILE	=				\

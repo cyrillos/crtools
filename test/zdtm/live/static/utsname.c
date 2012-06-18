@@ -46,7 +46,7 @@ static int test_fn(int argc, char **argv)
 
 	close(fd);
 
-	test_daemon();
+	test_ns_daemon();
 	test_waitsig();
 
 	uname(&after);

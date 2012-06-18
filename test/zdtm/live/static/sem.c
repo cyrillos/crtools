@@ -130,7 +130,7 @@ static int test_fn(int argc, char **argv)
 		goto out_destroy;
 	}
 
-	test_daemon();
+	test_ns_daemon();
 	test_waitsig();
 
 	ret = check_sem_by_id(id, val);

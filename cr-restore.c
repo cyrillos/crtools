@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <sys/file.h>
 #include <sys/shm.h>
+#include <sys/mount.h>
 
 #include <sched.h>
 
@@ -67,9 +68,10 @@ static int shmem_remap(void *old_addr, void *new_addr, unsigned long size)
 	return 0;
 }
 
+static int max_pid = 0;
 static int prepare_pstree(void)
 {
-	int ret = 0, ps_fd;
+	int ret = 0, i, ps_fd;
 	struct pstree_item *pi, *parent = NULL;
 
 	pr_info("Reading image tree\n");
@@ -100,8 +102,16 @@ static int prepare_pstree(void)
 			break;
 
 		pi->pid = e.pid;
+		if (e.pid > max_pid)
+			max_pid = e.pid;
+
 		pi->pgid = e.pgid;
+		if (e.pgid > max_pid)
+			max_pid = e.pgid;
+
 		pi->sid = e.sid;
+		if (e.sid > max_pid)
+			max_pid = e.sid;
 
 		if (e.ppid == 0) {
 			BUG_ON(root_item);
@@ -138,12 +148,16 @@ static int prepare_pstree(void)
 		parent = pi;
 
 		pi->nr_threads = e.nr_threads;
-		pi->threads = xmalloc(e.nr_threads * sizeof(u32));
+		pi->threads = xmalloc(e.nr_threads * sizeof(struct pid));
 		if (!pi->threads)
 			break;
 
-		ret = read_img_buf(ps_fd, pi->threads,
-				e.nr_threads * sizeof(u32));
+		ret = 0;
+		for (i = 0; i < e.nr_threads; i++) {
+			ret = read_img_buf(ps_fd, &pi->threads[i].pid, sizeof(u32));
+			if (ret < 0)
+				break;
+		}
 		if (ret < 0)
 			break;
 
@@ -156,6 +170,105 @@ static int prepare_pstree(void)
 
 	close(ps_fd);
 	return ret;
+}
+
+static int prepare_pstree_ids(void)
+{
+	struct pstree_item *item, *child, *helper, *tmp;
+	LIST_HEAD(helpers);
+
+	/* Some task can be reparented to init. A helper task should be added
+	 * for restoring sid of such tasks. The helper tasks will be exited
+	 * immediately after forking children and all children will be
+	 * reparented to init. */
+	list_for_each_entry(item, &root_item->children, list) {
+		if (item->sid == root_item->sid || item->sid == item->pid)
+			continue;
+
+		helper = alloc_pstree_item();
+		if (helper == NULL)
+			return -1;
+		helper->sid = item->sid;
+		helper->pgid = item->sid;
+		helper->pid = item->sid;
+		helper->state = TASK_HELPER;
+		helper->parent = root_item;
+		list_add_tail(&helper->list, &helpers);
+
+		pr_info("Add a helper %d for restoring SID %d\n",
+				helper->pid, helper->sid);
+
+		child = list_entry(item->list.prev, struct pstree_item, list);
+		item = child;
+
+		list_for_each_entry_safe_continue(child, tmp, &root_item->children, list) {
+			if (child->sid != helper->sid)
+				continue;
+			if (child->sid == child->pid)
+				continue;
+
+			pr_info("Attach %d to the temporary task %d\n",
+							child->pid, helper->pid);
+
+			child->parent = helper;
+			list_move(&child->list, &helper->children);
+		}
+	}
+
+	for_each_pstree_item(item) {
+		if (!item->parent) /* skip the root task */
+			continue;
+
+		/* Try to find a session leader */
+		if (item->state == TASK_HELPER)
+			continue;
+
+		if (item->sid != item->pid) {
+			struct pstree_item *parent;
+
+			if (item->parent->sid == item->sid)
+				continue;
+
+			/* the task could fork a child before and after setsid() */
+			parent = item->parent;
+			while (parent && parent->pid != item->sid) {
+				parent->born_sid = item->sid;
+				pr_info("%d was born with sid %d\n", parent->pid, item->sid);
+				parent = parent->parent;
+			}
+
+			if (parent == NULL) {
+				pr_err("Can't find a session leader for %d\n", item->sid);
+			}
+
+			continue;
+		}
+
+		pr_info("Session leader %d\n", item->sid);
+
+		/* Try to find helpers, who should be connected to the leader */
+		list_for_each_entry(child, &helpers, list) {
+			if (child->state != TASK_HELPER)
+				continue;
+
+			if (child->sid != item->sid)
+				continue;
+
+			child->pgid = item->pgid;
+			child->pid = ++max_pid;
+			child->parent = item;
+			list_move(&child->list, &item->children);
+
+			pr_info("Attach %d to the task %d\n",
+					child->pid, item->pid);
+
+			break;
+		}
+	}
+
+	list_splice(&helpers, &root_item->children);
+
+	return 0;
 }
 
 static int prepare_shared(void)
@@ -327,7 +440,27 @@ err:
 
 static int restore_one_alive_task(int pid)
 {
+	struct pstree_item *pi;
 	pr_info("Restoring resources\n");
+
+	list_for_each_entry(pi, &me->children, list) {
+		int status, ret;
+
+		if (pi->state != TASK_HELPER)
+			continue;
+
+		ret = waitpid(pi->pid, &status, 0);
+		if (ret == -1) {
+			pr_err("waitpid(%d) failed\n", pi->pid);
+			return -1;
+		}
+
+		if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+			pr_err("%d exited with non-zero code (%d,%d)", pi->pid,
+				WEXITSTATUS(status), WTERMSIG(status));
+			return -1;
+		}
+	}
 
 	if (prepare_fds(me))
 		return -1;
@@ -389,6 +522,13 @@ static void zombie_prepare_signals(void)
 static inline int sig_fatal(int sig)
 {
 	return (sig > 0) && (sig < SIGMAX) && (SIG_FATAL_MASK & (1 << sig));
+}
+
+static int restore_one_fake(int pid)
+{
+	/* We should wait here, otherwise last_pid will be changed. */
+	futex_wait_while(&task_entries->start, CR_STATE_FORKING);
+	return 0;
 }
 
 static int restore_one_zombie(int pid, int exit_code)
@@ -459,6 +599,9 @@ static int restore_one_task(int pid)
 {
 	struct task_core_entry tc;
 
+	if (me->state == TASK_HELPER)
+		return restore_one_fake(pid);
+
 	if (check_core_header(pid, &tc))
 		return -1;
 
@@ -517,11 +660,14 @@ static inline int fork_with_pid(struct pstree_item *item, unsigned long ns_clone
 		goto err_close;
 	}
 
-	if (write_img_buf(ca.fd, buf, strlen(buf)))
-		goto err_unlock;
+	if (!(ca.clone_flags & CLONE_NEWPID)) {
+		if (write_img_buf(ca.fd, buf, strlen(buf)))
+			goto err_unlock;
+	} else
+		BUG_ON(pid != 1);
 
 	ret = clone(restore_task_with_children, stack + STACK_SIZE,
-			ns_clone_flags | SIGCHLD, &ca);
+			ca.clone_flags | SIGCHLD, &ca);
 
 	if (ret < 0)
 		pr_perror("Can't fork for %d", pid);
@@ -540,6 +686,16 @@ err:
 
 static void sigchld_handler(int signal, siginfo_t *siginfo, void *data)
 {
+	struct pstree_item *pi;
+
+	if (me)
+		list_for_each_entry(pi, &me->children, list) {
+			if (pi->state != TASK_HELPER)
+				continue;
+			if (pi->pid == siginfo->si_pid)
+				return;
+		}
+
 	if (siginfo->si_code & CLD_EXITED)
 		pr_err("%d exited, status=%d\n",
 			siginfo->si_pid, siginfo->si_status);
@@ -557,7 +713,7 @@ static void sigchld_handler(int signal, siginfo_t *siginfo, void *data)
 
 static void xid_fail(void)
 {
-	/* exit(1) */
+	exit(1);
 }
 
 static void restore_sid(void)
@@ -573,16 +729,19 @@ static void restore_sid(void)
 	 * we can call setpgid() on custom values.
 	 */
 
-	pr_info("Restoring %d to %d sid\n", me->pid, me->sid);
 	if (me->pid == me->sid) {
+		pr_info("Restoring %d to %d sid\n", me->pid, me->sid);
 		sid = setsid();
 		if (sid != me->sid) {
 			pr_perror("Can't restore sid (%d)", sid);
 			xid_fail();
 		}
 	} else {
-		sid = getsid(getppid());
+		sid = getsid(getpid());
 		if (sid != me->sid) {
+			/* Skip the root task if it's not init */
+			if (me == root_item && root_item->pid != 1)
+				return;
 			pr_err("Requested sid %d doesn't match inherited %d\n",
 					me->sid, sid);
 			xid_fail();
@@ -607,6 +766,18 @@ static void restore_pgid(void)
 	}
 }
 
+static char proc_mountpoint[PATH_MAX] = "/proc";
+
+static bool restore_before_setsid(struct pstree_item *child)
+{
+	int csid = child->born_sid == -1 ? child->sid : child->born_sid;
+
+	if (child->parent->born_sid == csid)
+		return true;
+
+	return false;
+}
+
 static int restore_task_with_children(void *_arg)
 {
 	struct cr_clone_arg *ca = _arg;
@@ -625,6 +796,15 @@ static int restore_task_with_children(void *_arg)
 		exit(-1);
 	}
 
+	if (pid == 1) { /* New pid namespace */
+		ret = mount("proc", proc_mountpoint, "proc", MS_MGC_VAL, NULL);
+		if (ret == -1) {
+			pr_err("mount failed");
+			exit(1);
+		}
+		set_proc_mountpoint(proc_mountpoint);
+	}
+
 	ret = log_init_by_pid();
 	if (ret < 0)
 		exit(1);
@@ -634,8 +814,6 @@ static int restore_task_with_children(void *_arg)
 		if (ret)
 			exit(-1);
 	}
-
-	restore_sid();
 
 	/*
 	 * The block mask will be restored in sigresturn.
@@ -652,13 +830,31 @@ static int restore_task_with_children(void *_arg)
 
 	pr_info("Restoring children:\n");
 	list_for_each_entry(child, &me->children, list) {
+		if (!restore_before_setsid(child))
+			continue;
+
+		BUG_ON(child->born_sid != -1 && getsid(getpid()) != child->born_sid);
+
 		ret = fork_with_pid(child, 0);
 		if (ret < 0)
 			exit(1);
 	}
 
-	futex_dec_and_wake(&task_entries->nr_in_progress);
-	futex_wait_while(&task_entries->start, CR_STATE_FORKING);
+	restore_sid();
+
+	pr_info("Restoring children:\n");
+	list_for_each_entry(child, &me->children, list) {
+		if (restore_before_setsid(child))
+			continue;
+		ret = fork_with_pid(child, 0);
+		if (ret < 0)
+			exit(1);
+	}
+
+	if (me->state != TASK_HELPER) {
+		futex_dec_and_wake(&task_entries->nr_in_progress);
+		futex_wait_while(&task_entries->start, CR_STATE_FORKING);
+	}
 
 	restore_pgid();
 
@@ -676,7 +872,7 @@ static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
 		return -1;
 	}
 
-	act.sa_flags |= SA_NOCLDWAIT | SA_NOCLDSTOP | SA_SIGINFO | SA_RESTART;
+	act.sa_flags |= SA_NOCLDSTOP | SA_SIGINFO | SA_RESTART;
 	act.sa_sigaction = sigchld_handler;
 	ret = sigaction(SIGCHLD, &act, &old_act);
 	if (ret < 0) {
@@ -690,6 +886,18 @@ static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
 	 * the ns contents dumping/restoring. Need to revisit
 	 * this later.
 	 */
+
+	if (init->pid == 1) {
+		sprintf(proc_mountpoint, "/tmp/crtools-proc.XXXXXX");
+		if (mkdtemp(proc_mountpoint) == NULL) {
+			pr_err("mkdtemp failed %m");
+			return -1;
+		}
+		/* A process with pid = 1 is "init".
+		 * It should be restore in new pid ns.
+		 * The first process in pid ns gets pid = 1 automaticaly. */
+		opts->namespaces_flags |= CLONE_NEWPID;
+	}
 
 	ret = fork_with_pid(init, opts->namespaces_flags);
 	if (ret < 0)
@@ -709,6 +917,16 @@ static int restore_root_task(struct pstree_item *init, struct cr_options *opts)
 	ret = (int)futex_get(&task_entries->nr_in_progress);
 
 out:
+	if (init->pid == 1) {
+		int err;
+		err = umount(proc_mountpoint);
+		if (err == -1)
+			pr_err("Can't umount %s\n", proc_mountpoint);
+		err = rmdir(proc_mountpoint);
+		if (err == -1)
+			pr_err("Can't delete %s\n", proc_mountpoint);
+	}
+
 	if (ret < 0) {
 		struct pstree_item *pi;
 		pr_err("Someone can't be restored\n");
@@ -750,6 +968,9 @@ static int restore_all_tasks(pid_t pid, struct cr_options *opts)
 		return -1;
 
 	if (prepare_shared() < 0)
+		return -1;
+
+	if (prepare_pstree_ids() < 0)
 		return -1;
 
 	return restore_root_task(root_item, opts);
@@ -968,7 +1189,7 @@ static int sigreturn_restore(pid_t pid, struct list_head *tgt_vmas, int nr_vmas)
 	restore_thread_vma_len	= 0;
 
 	ret = parse_smaps(pid, &self_vma_list, false);
-	close_pid_proc();
+	close_proc();
 	if (ret < 0)
 		goto err;
 
@@ -1133,7 +1354,7 @@ static int sigreturn_restore(pid_t pid, struct list_head *tgt_vmas, int nr_vmas)
 	 * Fill up per-thread data.
 	 */
 	for (i = 0; i < me->nr_threads; i++) {
-		thread_args[i].pid = me->threads[i];
+		thread_args[i].pid = me->threads[i].pid;
 
 		/* skip self */
 		if (thread_args[i].pid == pid)

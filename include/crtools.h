@@ -84,6 +84,7 @@ enum {
 	LOG_FD_OFF = 1,
 	IMG_FD_OFF,
 	SELF_EXE_FD_OFF,
+	PROC_FD_OFF,
 };
 
 int get_service_fd(int type);
@@ -175,16 +176,25 @@ struct rst_info {
 	struct list_head	eventpoll;
 };
 
+struct pid {
+	u32 pid;
+	u32 real_pid;
+};
+
 struct pstree_item {
 	struct list_head	list;
-	pid_t			pid;		/* leader pid */
+	u32 pid;
+	union {
+		u32 real_pid;
+		u32 born_sid;
+	};
 	struct pstree_item	*parent;
 	struct list_head	children;	/* array of children */
 	pid_t			pgid;
 	pid_t			sid;
 	int			state;		/* TASK_XXX constants */
 	int			nr_threads;	/* number of threads */
-	u32			*threads;	/* array of threads */
+	struct pid		*threads;	/* array of threads */
 	struct rst_info		rst[0];
 };
 

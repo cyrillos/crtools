@@ -14,6 +14,7 @@
 #include "zdtmtst.h"
 
 static volatile sig_atomic_t sig_received = 0;
+static int test_namespace = 0;
 
 static void sig_hand(int signo)
 {
@@ -197,6 +198,17 @@ static int do_test_fn(void *_arg)
 	exit(0);
 }
 
+static int signal_pipe = -1;
+void test_ns_daemon()
+{
+
+	if (!test_namespace) {
+		err("It could be called only for name space test cases");
+		exit(1);
+	}
+	close(signal_pipe);
+}
+
 void test_init_ns(int argc, char **argv, unsigned long clone_flags,
 		  int (*fn)(int , char **))
 {
@@ -210,6 +222,10 @@ void test_init_ns(int argc, char **argv, unsigned long clone_flags,
 	};
 	struct zdtm_clone_arg ca;
 	void *stack;
+	int p[2], ret, status;
+	char c;
+
+	test_namespace = 1;
 
 	sigemptyset(&sa.sa_mask);
 
@@ -241,6 +257,13 @@ void test_init_ns(int argc, char **argv, unsigned long clone_flags,
 		exit(1);
 	}
 
+	ret = pipe(p);
+	if (ret == -1) {
+		err("Can't create signal pipe");
+		exit(1);
+	}
+	signal_pipe = p[1];
+
 	ca.pidf = pidf;
 	ca.fn = fn;
 	ca.argc = argc;
@@ -250,21 +273,28 @@ void test_init_ns(int argc, char **argv, unsigned long clone_flags,
 		err("Daemonizing failed: %m\n");
 		exit(1);
 	}
+	close(signal_pipe);
 
-	/* parent will exit when the child is ready */
-	test_waitsig();
+	ret = read(p[0], &c, 1);
+	if (ret == -1) {
+		err("read(signal_pipe) failed");
+		exit(1);
+	}
 
-	if (sig_received == SIGCHLD) {
-		int ret;
-		waitpid(pid, &ret, 0);
+	ret = waitpid(pid, &status, WNOHANG);
+	if (ret == -1) {
+		err("waitpid(%d) failed", pid);
+		exit(1);
+	}
 
+	if (ret != 0) {
 		if (WIFEXITED(ret)) {
 			err("Test exited with unexpectedly with code %d\n", WEXITSTATUS(ret));
-			exit(0);
+			exit(1);
 		}
 		if (WIFSIGNALED(ret)) {
 			err("Test exited on unexpected signal %d\n", WTERMSIG(ret));
-			exit(0);
+			exit(1);
 		}
 	}
 
@@ -276,6 +306,11 @@ void test_init_ns(int argc, char **argv, unsigned long clone_flags,
 void test_daemon()
 {
 	pid_t ppid;
+
+	if (test_namespace) {
+		err("It could not be called for namespace test cases");
+		exit(1);
+	}
 
 	ppid = getppid();
 	if (ppid <= 1) {
