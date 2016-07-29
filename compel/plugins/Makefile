@@ -1,20 +1,25 @@
 .PHONY: .FORCE
 
+ARCH_DIR		:= compel/arch/$(ARCH)/plugins
+
 ccflags-y		+= -iquote $(obj)/include/
 ccflags-y		+= -iquote $(obj)/include/uapi
-ccflags-y		+= -iquote $(SRC_DIR)/compel/include
 ccflags-y		+= -iquote $(SRC_DIR)/criu/include
 ccflags-y		+= -iquote $(SRC_DIR)/criu/arch/$(ARCH)/include
+ccflags-y		+= -iquote $(SRC_DIR)/compel/include
+ccflags-y		+= -iquote $(SRC_DIR)/$(ARCH_DIR)/include
 
-ARCH_DIR		:= $(obj)/../arch/$(ARCH)/plugins
+asflags-y		+= -iquote $(SRC_DIR)/criu/arch/$(ARCH)/include
+asflags-y		+= -iquote $(SRC_DIR)/compel/plugins/include/uapi
+asflags-y		+= -iquote $(SRC_DIR)/$(ARCH_DIR)
 
 #
 # STD plugin
 target			+= std
 std-obj-y		+= std/std.o
 std-obj-y		+= std/string.o
-std-obj-y		+= $(ARCH_DIR)/std/syscalls-64.o
-std-obj-y		+= $(ARCH_DIR)/std/calls32.o
+std-obj-y		+= arch/$(ARCH)/plugins/std/syscalls-64.o
+std-obj-y		+= arch/$(ARCH)/plugins/std/calls32.o
 
 sys-proto-generic	:= $(obj)/include/uapi/std/syscall.h
 sys-codes-generic	:= $(obj)/include/uapi/std/syscall-codes.h
@@ -22,8 +27,8 @@ sys-codes		 = $(obj)/include/uapi/std/syscall-codes-$(1).h
 sys-proto		 = $(obj)/include/uapi/std/syscall-$(1).h
 sys-def			 = $(ARCH_DIR)/std/syscalls/syscall_$(1).tbl
 sys-asm			 = $(ARCH_DIR)/std/syscalls-$(1).S
-sys-asm-common-name	 = syscall-common-x86-$(1).S
-sys-asm-common		 = $(ARCH_DIR)/std/syscalls/$(sys-asm-common-name)
+sys-asm-common-name	 = std/syscalls/syscall-common-x86-$(1).S
+sys-asm-common		 = $(ARCH_DIR)/$(sys-asm-common-name)
 
 sys-bits		:= 64
 
