@@ -38,7 +38,7 @@ static int fini_socket(void)
 	if (ret)
 		goto err;
 
-	ret = sys_recv(ctl_socket, buf, sizeof(buf), MSG_WAITALL);
+	ret = sys_recvfrom(ctl_socket, buf, sizeof(buf), MSG_WAITALL, 0, 0);
 	if (ret)
 		goto err;
 err:
