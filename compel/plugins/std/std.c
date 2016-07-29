@@ -1,5 +1,6 @@
 #include <sys/types.h>
 
+#include "uapi/int.h"
 #include "uapi/plugins.h"
 #include "uapi/plugin-std.h"
 
