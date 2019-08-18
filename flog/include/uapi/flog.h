@@ -156,6 +156,8 @@ extern int flog_encode_msg(flog_ctx_t *ctx,
 			   const char *format, ...);
 extern int flog_decode_msg(flog_msg_t *m, int fdout);
 
+extern int flog_map_buf(int fdout, flog_ctx_t *flog_ctx);
+
 #define flog_encode(ctx, fmt, ...)						\
 	flog_encode_msg(ctx,							\
 			FLOG_PP_NARG(__VA_ARGS__),				\

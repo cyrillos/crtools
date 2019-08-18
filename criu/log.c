@@ -204,9 +204,10 @@ void flush_early_log_buffer(int fd)
 	early_log_buf_off = 0;
 }
 
-int log_init(const char *output)
+int log_init(const char *output, bool binlog)
 {
 	int new_logfd, fd;
+	int log_file_open_mode, log_file_perm;
 
 	gettimeofday(&start, NULL);
 	reset_buf_off();
@@ -218,7 +219,9 @@ int log_init(const char *output)
 			return -1;
 		}
 	} else if (output) {
-		new_logfd = open(output, O_CREAT|O_TRUNC|O_WRONLY|O_APPEND, 0600);
+		log_file_open_mode = opts.binlog?(O_RDWR | O_CREAT | O_TRUNC):(O_CREAT|O_TRUNC|O_WRONLY|O_APPEND);
+		log_file_perm = opts.binlog?0644:0600;
+		new_logfd = open(output, log_file_open_mode, log_file_perm);
 		if (new_logfd < 0) {
 			pr_perror("Can't create log file %s", output);
 			return -1;
@@ -234,14 +237,20 @@ int log_init(const char *output)
 	fd = install_service_fd(LOG_FD_OFF, new_logfd);
 	if (fd < 0)
 		goto err;
-
+	if (opts.binlog) {
+		//flog_init(&flog_ctx);
+		//strncpy(opts.output, "-", 2);
+		flog_map_buf(fd, &flog_ctx);
+	}
+	
 	init_done = 1;
 
 	/*
 	 * Once logging is setup this write out all early log messages.
 	 * Only those messages which have to correct log level are printed.
 	 */
-	flush_early_log_buffer(fd);
+	 
+	//flush_early_log_buffer(fd);
 
 	print_versions();
 
@@ -252,7 +261,7 @@ err:
 	return -1;
 }
 
-int log_init_by_pid(pid_t pid)
+int log_init_by_pid(pid_t pid, bool binlog)
 {
 	char path[PATH_MAX];
 
@@ -272,7 +281,7 @@ int log_init_by_pid(pid_t pid)
 
 	snprintf(path, PATH_MAX, "%s.%d", opts.output, pid);
 
-	return log_init(path);
+	return log_init(path, binlog);
 }
 
 void log_fini(void)
@@ -394,7 +403,7 @@ void vprint_on_level(unsigned int loglevel, const char *format, va_list params)
 void print_on_level(unsigned int loglevel, const char *format, ...)
 {
 	va_list params;
-
+	if (opts.binlog) return;
 	va_start(params, format);
 	vprint_on_level(loglevel, format, params);
 	va_end(params);

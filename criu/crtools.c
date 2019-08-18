@@ -59,7 +59,7 @@ int main(int argc, char *argv[], char *envp[])
 	int state = PARSING_GLOBAL_CONF;
 
 	/* FIXME: where to put flog_fini? */
-	flog_init(&flog_ctx);
+	//flog_init(&flog_ctx);
 
 	BUILD_BUG_ON(CTL_32 != SYSCTL_TYPE__CTL_32);
 	BUILD_BUG_ON(__CTL_STR != SYSCTL_TYPE__CTL_STR);
@@ -79,6 +79,13 @@ int main(int argc, char *argv[], char *envp[])
 	init_opts();
 
 	ret = parse_options(argc, argv, &usage_error, &has_exec_cmd, state);
+
+	//if (flog_init(&flog_ctx))
+	//	return 1;
+	
+	
+
+	
 
 	if (ret == 1)
 		return 1;
@@ -170,9 +177,9 @@ int main(int argc, char *argv[], char *envp[])
 		return 1;
 	}
 
-	if (log_init(opts.output))
+	if (log_init(opts.output, opts.binlog))
 		return 1;
-
+		
 	if (kerndat_init())
 		return 1;
 
@@ -281,6 +288,9 @@ int main(int argc, char *argv[], char *envp[])
 		return -1;
 	}
 
+	printf("--- FLOG ---\n");
+	flog_decode_all(&flog_ctx, STDOUT_FILENO);
+	printf("--- FLOG ---\n");
 	pr_msg("Error: unknown command: %s\n", argv[optind]);
 usage:
 	pr_msg("\n"
@@ -311,6 +321,8 @@ usage:
 
 	if (usage_error) {
 		pr_msg("\nTry -h|--help for more info\n");
+		
+		flog_fini(&flog_ctx);
 		return 1;
 	}
 
@@ -433,6 +445,7 @@ usage:
 "\n"
 "* Logging:\n"
 "  -o|--log-file FILE    log file name\n"
+"     --binlog           use faster binary log instead of slower text log\n"
 "     --log-pid          enable per-process logging to separate FILE.pid files\n"
 "  -v[v...]|--verbosity  increase verbosity (can use multiple v)\n"
 "  -vNUM|--verbosity=NUM set verbosity to NUM (higher level means more output):\n"
