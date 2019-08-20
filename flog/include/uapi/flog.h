@@ -144,6 +144,7 @@ typedef struct {
 	char		*pos;
 	size_t		size;
 	size_t		left;
+	int 		readonly;
 } flog_ctx_t;
 
 extern int flog_init(flog_ctx_t *ctx);

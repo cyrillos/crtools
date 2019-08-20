@@ -26,6 +26,10 @@ int flog_map_buf(int fdout, flog_ctx_t *flog_ctx)
 {
 	uint64_t off = 0;
 	void *addr;
+	
+	mbuf_size = 2 * BUF_SIZE;
+	
+	if (flog_ctx->size==0)	flog_ctx->size=BUF_SIZE;
 
 	/*
 	 * Two buffers are mmaped into memory. A new one is mapped when a first
@@ -47,16 +51,27 @@ int flog_map_buf(int fdout, flog_ctx_t *flog_ctx)
 		fsize += BUF_SIZE;
 	fsize += BUF_SIZE;
 
-	if (ftruncate(fdout, fsize)) {
-		fprintf(stderr, "Unable to truncate a file: %m");
-		return -1;
+	if (!flog_ctx->readonly) {
+		if (ftruncate(fdout, fsize)) {
+			fprintf(stderr, "Unable to truncate a file: %m");
+			return -1;
+		}
 	}	
-	if (!fbuf)
-		addr = mmap(NULL, BUF_SIZE * 2, PROT_WRITE | PROT_READ,
+	if (!fbuf) {
+		if (!flog_ctx->readonly) {			
+			addr = mmap(NULL, BUF_SIZE * 2, PROT_WRITE | PROT_READ,
 			    MAP_FILE | MAP_SHARED, fdout, fsize - 2 * BUF_SIZE);
-	else
+		}
+		else {			
+			addr = mmap(NULL, flog_ctx->size, PROT_READ,
+			    MAP_FILE | MAP_SHARED, fdout, 0);
+			mbuf_size = flog_ctx->size;
+		}
+	}
+	else {
 		addr = mremap(fbuf + BUF_SIZE, BUF_SIZE,
 				BUF_SIZE * 2, MREMAP_FIXED, fbuf);
+	}
 	if (addr == MAP_FAILED) {
 		fprintf(stderr, "Unable to map a buffer: %m");
 		return -1;
@@ -64,24 +79,25 @@ int flog_map_buf(int fdout, flog_ctx_t *flog_ctx)
 	
 	fbuf = addr;
 	mbuf = fbuf + off;
-	mbuf_size = 2 * BUF_SIZE;
+
 	//flog_ctx->buf=flog_ctx->pos=mbuf;
-	printf("flog_map_buf: mapping buffer to file, address: %ld\n", (long)mbuf);
+	//printf("flog_map_buf: mapping buffer to file, address: %ld\n", (long)mbuf);
 	binlog_fd=fdout;
 	flog_init(flog_ctx);
+	//printf("exited from flog_init\n");
 	return 0;
 }
 
 int flog_init(flog_ctx_t *ctx)
 {
-	memset(ctx, 0, sizeof(*ctx));
+	//memset(ctx, 0, sizeof(*ctx));
 
-	/* 20M should be enough for now */
-	ctx->size = ctx->left = mbuf_size; //20 << 20;
-	ctx->pos = ctx->buf = mbuf;//malloc(ctx->size);
+	
+	ctx->size = ctx->left = mbuf_size; 
+	ctx->pos = ctx->buf = mbuf;
 	if (!ctx->buf)
 		return -ENOMEM;
-	printf("flog_init: ctx pos address: %ld\n", (long) ctx->pos);
+	
 	return 0;
 }
 
@@ -89,20 +105,22 @@ void flog_fini(flog_ctx_t *ctx)
 {
 	if (mbuf == _mbuf)
 		return;
-	printf("closing binary log...\n");
+	//printf("closing binary log...\n");
 	munmap(ctx->buf, BUF_SIZE * 2);
 	//printf("closed\n");
 	ctx->size=(size_t) (ctx->pos - ctx->buf);
 	//printf("flog_fini: size should be %ld\n",ctx->size);
-	if (ftruncate(binlog_fd, ctx->size)) {
-		fprintf(stderr, "Unable to truncate a file: %m");
+	if (!ctx->readonly) {
+		if (ftruncate(binlog_fd, ctx->size)) {
+			fprintf(stderr, "Unable to truncate a file: %m");
+		}
 	}
 	
 	//free(ctx->buf);
-	memset(ctx, 0, sizeof(*ctx));
+	//memset(ctx, 0, sizeof(*ctx));
 }
 
-int flog_decode_msg(flog_msg_t *m, int fdout)
+int flog_decode_msg(flog_msg_t *ro_m, int fdout)
 {
 	ffi_type *args[34] = {
 		[0]		= &ffi_type_sint,
@@ -112,15 +130,16 @@ int flog_decode_msg(flog_msg_t *m, int fdout)
 	void *values[34];
 	ffi_cif cif;
 	ffi_arg rc;
-
+	flog_msg_t *m;
 	size_t i, ret = 0;
 	char *fmt;
 
+	m=malloc(ro_m->size);
+	memcpy(m, ro_m, ro_m->size);
 	values[0] = (void *)&fdout;
-
+	//printf("nargs is %d, fmt is %ld, format string is %s\n", m->nargs, m->fmt, (char *)m + m->fmt);
 	if (m->magic != FLOG_MAGIC) {
-		//printf("bad magic %d, not %d\n", m->magic, FLOG_MAGIC);
-		//printf("fmt is %ld, format string is %s\n", m->fmt, "(char *)m + m->fmt");
+		//printf("bad magic %d, not %d\n", m->magic, FLOG_MAGIC);		
 		return -EINVAL;
 	}
 	if (m->version != FLOG_VERSION)	{
@@ -130,19 +149,28 @@ int flog_decode_msg(flog_msg_t *m, int fdout)
 
 	fmt = (void *)m + m->fmt;
 	values[1] = &fmt;
-
-	for (i = 0; i < m->nargs; i++) {
+	
+	for (i = 0; i < m->nargs; i++) {		
+		//printf("args %ld: %ld\n", i, m->args[i]);
 		values[i + 2] = (void *)&m->args[i];
-		if (m->mask & (1u << i))
+		if (m->mask & (1u << i)) {
 			m->args[i] = (long)((void *)m + m->args[i]);
+			//printf("args %ld: %s\n", i, (char *)m->args[i]);
+		}	
+		
 	}
-
-	if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, m->nargs + 2,
-			 &ffi_type_sint, args) == FFI_OK) {
+	//printf("one line soon will be done\n");
+	int sdf=ffi_prep_cif(&cif, FFI_DEFAULT_ABI, m->nargs + 2,
+			 &ffi_type_sint, args);
+	//printf("one line prep = %d\n", sdf==FFI_OK);
+	if ( sdf == FFI_OK) {
 		ffi_call(&cif, FFI_FN(dprintf), &rc, values);
 	} else
 		ret = -1;
-
+	
+	//printf("one line done\n");	
+	
+	free(m);
 	return ret;
 }
 
@@ -150,7 +178,11 @@ void flog_decode_all(flog_ctx_t *ctx, int fdout)
 {
 	flog_msg_t *m;
 	char *pos;
-
+	printf("log size is %ld\n", ctx->size);
+	if (ctx->size == 0)
+		return;
+	if (ctx->readonly) ctx->pos=ctx->buf + ctx->size;
+	//printf("flog_decode_all:  ctx pos address: %ld, ctx buff address: %ld\n", (long) ctx->pos,(long) ctx->buf);
 	for (pos = ctx->buf; pos < ctx->pos; ) {
 		m = (void *)pos;
 		//printf("flog_decode_all:  ctx pos address: %ld, pos address: %ld\n", (long) ctx->pos,(long) pos);
@@ -160,7 +192,11 @@ void flog_decode_all(flog_ctx_t *ctx, int fdout)
 }
 
 int flog_encode_msg(flog_ctx_t *ctx, unsigned int nargs, unsigned int mask, const char *format, ...)
-{
+{	
+	if (ctx->readonly) {		
+		//printf("readonly\n");
+		return 0;
+	}
 	flog_msg_t *m = (void *)ctx->pos;
 	char *str_start, *p;
 	va_list argptr;
@@ -176,7 +212,7 @@ int flog_encode_msg(flog_ctx_t *ctx, unsigned int nargs, unsigned int mask, cons
 
 	m->fmt = str_start - ctx->pos;
 	str_start = p;
-	printf("arguments: %d, mask: %d, fmt: %s\n", nargs, mask, format);
+	//printf("arguments: %d, mask: %d, fmt: %s\n", nargs, mask, format);
 	va_start(argptr, format);
 	for (i = 0; i < nargs; i++) {
 		m->args[i] = (long)va_arg(argptr, long);

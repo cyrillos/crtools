@@ -1692,7 +1692,7 @@ static int restore_task_with_children(void *_arg)
 		goto err;
 	}
 
-	if (log_init_by_pid(vpid(current),opts.binlog))
+	if (log_init_by_pid(vpid(current)))
 		return -1;
 
 	if (current->parent == NULL) {

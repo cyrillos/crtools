@@ -82,6 +82,7 @@ struct cr_options {
 	int			link_remap_ok;
 	int			log_file_per_pid;
 	int			binlog;
+	int			printlog;
 	bool			swrk_restore;
 	char			*output;
 	char			*root;
