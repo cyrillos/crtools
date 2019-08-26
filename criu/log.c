@@ -221,14 +221,12 @@ int log_init(const char *output)
 		}
 	} else if (output) {
 		if (opts.printlog) {
-			//printf("printlog!\n");
 			/* read old binlog */
 			log_file_open_mode = O_RDONLY;
 			flog_ctx.readonly=1; /* don't try to write into it */
 			struct stat st;			
 			stat(opts.output, &st);			
 			flog_ctx.size=st.st_size;
-			//printf("file %s is %ld bytes\n",opts.output, flog_ctx.size);
 		}
 		else if (opts.binlog) {
 			log_file_open_mode = O_RDWR | O_CREAT | O_TRUNC;
@@ -257,8 +255,6 @@ int log_init(const char *output)
 			
 	if (opts.binlog||opts.printlog) {
 		
-		//flog_init(&flog_ctx);
-		//strncpy(opts.output, "-", 2);
 		flog_map_buf(fd, &flog_ctx);
 	}
 	
@@ -269,9 +265,6 @@ int log_init(const char *output)
 	 * Once logging is setup this write out all early log messages.
 	 * Only those messages which have to correct log level are printed.
 	 */
-	 
-	//flush_early_log_buffer(fd);
-
 	print_versions();
 
 	return 0;
@@ -308,7 +301,6 @@ void log_fini(void)
 {
 	flog_fini(&flog_ctx);
 	
-	//close_service_fd(LOG_FD_OFF);
 	
 }
 
