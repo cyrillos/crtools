@@ -242,6 +242,7 @@ int log_init(const char *output)
 			return -1;
 		}
 	} else {
+		flog_ctx.readonly=1; /* don't try to write into it */		
 		new_logfd = dup(DEFAULT_LOGFD);
 		if (new_logfd < 0) {
 			pr_perror("Can't dup log file");
