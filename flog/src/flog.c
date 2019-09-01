@@ -199,6 +199,7 @@ int flog_encode_msg(flog_ctx_t *ctx, unsigned int nargs, unsigned int mask, cons
 		 * a copy (FIXME implement rodata refs).
 		 */
 		if (mask & (1u << i)) {
+			if (!m->args[i]) m->args[i] = (long)"NULL";
 			p = memccpy(str_start, (void *)m->args[i], 0, ctx->left - (str_start - ctx->pos));
 			if (!p)
 				return -ENOMEM;
